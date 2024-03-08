@@ -1,0 +1,17 @@
+{
+   "version": "0",
+   "id": "01234567-0123-0123-0123-012345678901",
+   "detail-type": "IVS Stream State Change",
+   "source": "aws.ivs",
+   "account": "aws_account_id",
+   "time": "2017-06-12T10:23:43Z",
+   "region": "us-east-1",
+   "resources": [
+     "arn:aws:ivs:us-east-1:aws_account_id:channel/12345678-1a23-4567-a1bc-1a2b34567890"
+   ],
+   "detail": {
+     "event_name": "Stream Start",
+     "channel_name": "Your Channel",
+     "stream_id": "st-1A2b3c4D5e6F78ghij9Klmn"
+   }
+}

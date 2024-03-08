@@ -1,0 +1,263 @@
+service: aws-ivs-golang-service
+
+frameworkVersion: '3'
+
+useDotenv: true 
+
+provider:
+  name: aws
+  runtime: provided.al2
+  region: ${opt:region, 'us-east-1'}
+  memorySize: 128
+  stage: ${opt:stage, 'dev'}
+  environment:
+    RECORDING_CONFIG_ARN: !GetAtt IvsRecordingConfig.Arn
+    AUTH_API_KEY: ${env:AUTH_API_KEY}
+    PG_HOST: ${env:PG_HOST}
+    PG_PASSWORD: ${env:PG_PASSWORD}
+    PG_USER: ${env:PG_USER}
+    PG_DATABASE: ${env:PG_DATABASE}
+  iam:
+    role:
+      name: ${self:service}-ivs-role
+      statements:
+        - Effect: Allow
+          Action:
+            - 'ivs:*'
+          Resource: '*'
+        - Effect: Allow
+          Action:
+            - 'lambda:InvokeFunction'
+          Resource: '*'
+        - Effect: Allow
+          Action:
+            - 'cloudwatch:DescribeAlarms'
+            - 'cloudwatch:GetMetricData'
+            - 's3:CreateBucket'
+            - 's3:GetBucketLocation'
+            - 's3:ListAllMyBuckets'
+            - 'servicequotas:ListAWSDefaultServiceQuotas'
+            - 'servicequotas:ListRequestedServiceQuotaChangeHistoryByQuota'
+            - 'servicequotas:ListServiceQuotas'
+            - 'servicequotas:ListServices'
+            - 'servicequotas:ListTagsForResource'
+          Resource: '*'
+        - Effect: 'Allow'
+          Action: 
+            - 'iam:AttachRolePolicy'
+            - 'iam:CreateServiceLinkedRole'
+            - 'iam:PutRolePolicy'
+          Resource: 'arn:aws:iam::*:role/aws-service-role/ivs.amazonaws.com/AWSServiceRoleForIVSRecordToS3*'
+
+  httpApi:
+    # tighten up CORS rules prior to taking to production
+    cors: true
+    authorizers:
+      customAuthorizer:
+        type: request
+        functionName: authorize
+        enableSimpleResponses: true
+
+# Golang plugin configuration
+plugins:
+  - serverless-go-plugin
+custom:
+  go:
+    supportedRuntimes: ["provided.al2"]
+    buildProvidedRuntimeAsBootstrap: true
+
+# Lambda definitions
+functions:
+  authorize:
+    handler: functions/authorization/main.go
+
+  # API Gateway Lambdas
+  createIvsChannel:
+    handler: functions/channels/create-channel/main.go
+    environment:
+      WRITE_FUNC: ${self:service}-${self:provider.stage}-writeIvsChannel
+    vpc: ~
+    events:
+      - httpApi:
+          path: /channels
+          method: post
+          authorizer:
+            name: customAuthorizer
+  
+  isIvsChannelLive:
+    handler: functions/channels/is-live/main.go
+    events:
+      - httpApi:
+          path: /channels/{ivsChannelUuid}/live
+          method: get
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  listVideos:
+    handler: functions/on-demand/list-videos/main.go
+    events:
+      - httpApi:
+          path: /on-demand
+          method: get
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+  
+  searchVideos:
+    handler: functions/on-demand/search-videos/main.go
+    events:
+      - httpApi:
+          path: /on-demand/search
+          method: get
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  putVideoContent:
+    handler: functions/on-demand/put-video-content/main.go
+    events:
+      - httpApi:
+          path: /on-demand/{onDemandVideoUuid}
+          method: put
+          authorizer:
+            name: customAuthorizer
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  getSingleVideo:
+    handler: functions/on-demand/get-single-video/main.go
+    events:
+      - httpApi:
+          path: /on-demand/{onDemandVideoUuid}
+          method: get
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  setVideoActive:
+    handler: functions/on-demand/set-video-active/main.go
+    events:
+      # main case: soft delete a recording
+      - httpApi:
+          path: /on-demand/{onDemandVideoUuid}
+          method: delete
+          authorizer:
+            name: customAuthorizer
+      # case: restore a deleted recording
+      - httpApi:
+          path: /on-demand/{onDemandVideoUuid}
+          method: patch
+          authorizer:
+            name: customAuthorizer
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  # Event Bridge Lambdas
+  onIvsLiveStateChanged:
+    handler: functions/channels/on-stream-state-change/main.go
+    events:
+      - eventBridge:
+          pattern:
+            source: 
+              - aws.ivs
+            detail-type:
+              - IVS Stream State Change
+            detail:
+              event_name:
+                - Stream Start
+                - Stream End
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  onRecordingEnded:
+    handler: functions/on-demand/on-recording-end/main.go
+    events:
+      - eventBridge:
+          pattern:
+            source: 
+              - aws.ivs
+            detail-type:
+              - IVS Recording State Change
+            detail:
+              recording_status:
+                - Recording End
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+  # Manually invoked lambdas
+  writeIvsChannel:
+    handler: functions/channels/write-channel/main.go
+    vpc:
+      subnetIds:
+        - ${env:SUBNET_1}
+      securityGroupIds:
+        - ${env:SECURITY_GROUP}
+        - ${env:SECURITY_GROUP_2}
+
+# CloudFormation AWS Resources
+resources:
+  Resources:
+    S3BucketRecordings:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-bucket
+        CorsConfiguration:
+          CorsRules:
+            - AllowedHeaders:
+                - Access-Control-Allow-Origin
+              AllowedMethods:
+                - GET
+                - HEAD
+              AllowedOrigins:
+                - '*'
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true
+    
+    IvsRecordingConfig:
+      Type: AWS::IVS::RecordingConfiguration
+      DependsOn: S3BucketRecordings
+      Properties:
+        DestinationConfiguration:
+          S3:
+            BucketName: ${self:service}-bucket
+        Name: ${self:service}-recording-config
+        RecordingReconnectWindowSeconds: 5
+        Tags:
+          - Key: service
+            Value: ${self:service}
+        ThumbnailConfiguration:
+          Resolution: LOWEST_RESOLUTION
+          TargetIntervalSeconds: 15
+
