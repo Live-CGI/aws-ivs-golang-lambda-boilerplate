@@ -1,4 +1,4 @@
-service: aws-ivs-golang-service
+service: ${self:custom.stagePrefix}cllct-ivs-service
 
 frameworkVersion: '3'
 
@@ -12,6 +12,8 @@ provider:
   stage: ${opt:stage, 'dev'}
   environment:
     RECORDING_CONFIG_ARN: !GetAtt IvsRecordingConfig.Arn
+    RECORDING_BUCKET: ${self:custom.stagePrefix}${self:service}-bucket
+    STAGE: ${self:provider.stage}
     AUTH_API_KEY: ${env:AUTH_API_KEY}
     PG_HOST: ${env:PG_HOST}
     PG_PASSWORD: ${env:PG_PASSWORD}
@@ -28,6 +30,10 @@ provider:
         - Effect: Allow
           Action:
             - 'lambda:InvokeFunction'
+          Resource: '*'
+        - Effect: Allow
+          Action:
+            - 's3:*'
           Resource: '*'
         - Effect: Allow
           Action:
@@ -65,6 +71,11 @@ custom:
   go:
     supportedRuntimes: ["provided.al2"]
     buildProvidedRuntimeAsBootstrap: true
+  stagePrefixMap:
+    staging: ""
+    dev: "dev-"
+    prod: "prod-"
+  stagePrefix: ${self:custom.stagePrefixMap.${self:provider.stage}, ""}
 
 # Lambda definitions
 functions:
@@ -176,6 +187,8 @@ functions:
   # Event Bridge Lambdas
   onIvsLiveStateChanged:
     handler: functions/channels/on-stream-state-change/main.go
+    environment:
+      S3_FUNC: ${self:service}-${self:provider.stage}-updateS3State
     events:
       - eventBridge:
           pattern:
@@ -212,6 +225,21 @@ functions:
       securityGroupIds:
         - ${env:SECURITY_GROUP}
         - ${env:SECURITY_GROUP_2}
+  
+  updateS3State:
+    handler: functions/channels/update-s3-state/main.go
+    events:
+      - eventBridge:
+          pattern:
+            source: 
+              - aws.ivs
+            detail-type:
+              - IVS Stream State Change
+            detail:
+              event_name:
+                - Stream Start
+                - Stream End
+    vpc: ~
 
   # Manually invoked lambdas
   writeIvsChannel:
@@ -222,6 +250,7 @@ functions:
       securityGroupIds:
         - ${env:SECURITY_GROUP}
         - ${env:SECURITY_GROUP_2}
+  
 
 # CloudFormation AWS Resources
 resources:
@@ -229,7 +258,7 @@ resources:
     S3BucketRecordings:
       Type: AWS::S3::Bucket
       Properties:
-        BucketName: ${self:service}-bucket
+        BucketName: ${self:custom.stagePrefix}${self:service}-bucket
         CorsConfiguration:
           CorsRules:
             - AllowedHeaders:
@@ -251,7 +280,7 @@ resources:
       Properties:
         DestinationConfiguration:
           S3:
-            BucketName: ${self:service}-bucket
+            BucketName: ${self:custom.stagePrefix}${self:service}-bucket
         Name: ${self:service}-recording-config
         RecordingReconnectWindowSeconds: 5
         Tags:

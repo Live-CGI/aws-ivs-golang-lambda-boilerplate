@@ -78,9 +78,11 @@ func Handler(ctx context.Context, event events.EventBridgeEvent) (bool, error) {
 		Data: jsonb,
 	}
 
-	res, err := db.NewInsert().Model(&ivsStreamStateChange).Exec(ctx)
+	dbInsert, err := db.NewInsert().Model(&ivsStreamStateChange).Exec(ctx)
 
-	return res != nil, err
+	log.Println(dbInsert)
+
+	return err != nil, err
 }
 
 func main() {
